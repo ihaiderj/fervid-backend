@@ -1,0 +1,43 @@
+{% extends "admin/index.html" %}
+
+{% block content %}
+<div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px;">
+  <div style="background: #1e40af; color: white; padding: 20px; border-radius: 8px;">
+    <div style="font-size: 28px; font-weight: bold;">{{ total_mrs }}</div>
+    <div>Active MRs</div>
+  </div>
+  <div style="background: #059669; color: white; padding: 20px; border-radius: 8px;">
+    <div style="font-size: 28px; font-weight: bold;">{{ active_brochures }}</div>
+    <div>Active Brochures</div>
+  </div>
+  <div style="background: #7c3aed; color: white; padding: 20px; border-radius: 8px;">
+    <div style="font-size: 28px; font-weight: bold;">{{ total_doctors }}</div>
+    <div>Total Doctors</div>
+  </div>
+  <div style="background: #d97706; color: white; padding: 20px; border-radius: 8px;">
+    <div style="font-size: 28px; font-weight: bold;">{{ monthly_meetings }}</div>
+    <div>Monthly Meetings</div>
+  </div>
+</div>
+
+{% if recent_activities %}
+<h2>Recent Activity</h2>
+<table style="width: 100%; margin-bottom: 24px;">
+  <thead>
+    <tr><th>Time</th><th>User</th><th>Activity</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    {% for log in recent_activities %}
+    <tr>
+      <td>{{ log.created_at }}</td>
+      <td>{{ log.user_name }}</td>
+      <td>{{ log.activity_type }}</td>
+      <td>{{ log.description }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{{ block.super }}
+{% endblock %}
