@@ -5,7 +5,7 @@ from django.http import FileResponse, Http404
 from rest_framework.parsers import MultiPartParser
 from rest_framework.views import APIView
 
-from accounts.views.admin_views import _save_uploaded_file
+from brochures.storage import save_uploaded_file
 from brochures.models import Brochure
 from core.mixins import APIResponseMixin
 from core.permissions import IsAdminOrMR
@@ -20,14 +20,7 @@ class BrochureUploadView(APIResponseMixin, APIView):
         if not uploaded:
             return self.error("No file provided", code="NO_FILE")
 
-        max_bytes = settings.MAX_FILE_SIZE_MB * 1024 * 1024
-        if uploaded.size > max_bytes:
-            return self.error(
-                f"File exceeds {settings.MAX_FILE_SIZE_MB}MB limit",
-                code="FILE_TOO_LARGE",
-            )
-
-        file_url = _save_uploaded_file(uploaded, "brochures")
+        file_url = save_uploaded_file(uploaded, "brochures")
         return self.success(
             {
                 "file_url": file_url,
@@ -91,5 +84,5 @@ class DoctorPhotoUploadView(APIResponseMixin, APIView):
         if not uploaded:
             return self.error("No file provided", code="NO_FILE")
 
-        file_url = _save_uploaded_file(uploaded, "doctor_photos")
+        file_url = save_uploaded_file(uploaded, "doctor_photos")
         return self.success({"file_url": file_url}, status_code=201)

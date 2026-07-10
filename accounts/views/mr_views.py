@@ -4,8 +4,14 @@ from rest_framework import status
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.views import APIView
 
-from accounts.views.admin_views import _save_uploaded_file
+from brochures.storage import save_uploaded_file
 from brochures.models import Brochure, BrochureSync, SavedBrochure
+from brochures.saved_brochure_service import (
+    get_saved_brochure_for_mr,
+    soft_delete_saved_brochure,
+    upsert_saved_brochure,
+)
+from core.soft_delete import soft_delete_instance
 from brochures.serializers import (
     BrochureSyncSerializer,
     CreateBrochureSerializer,
@@ -108,7 +114,7 @@ class MRBrochureUploadView(APIResponseMixin, APIView):
 
         file_url = data.get("file_url", "")
         if "file" in request.FILES:
-            file_url = _save_uploaded_file(request.FILES["file"], "brochures")
+            file_url = save_uploaded_file(request.FILES["file"], "brochures")
 
         brochure = Brochure.objects.create(
             title=data["title"],
@@ -436,24 +442,27 @@ class MRSavedBrochureView(APIResponseMixin, APIView):
 
     def post(self, request):
         brochure_id = request.data.get("brochure_id") or request.data.get("p_brochure_id")
-        saved, _ = SavedBrochure.objects.update_or_create(
-            mr=request.user,
-            brochure_id=str(brochure_id),
-            defaults={
-                "brochure_title": request.data.get("brochure_title", ""),
-                "custom_title": request.data.get("custom_title", ""),
-                "original_brochure_data": request.data.get("original_brochure_data", {}),
-                "is_deleted": False,
-            },
+        if not brochure_id:
+            return self.error("brochure_id is required", code="MISSING_BROCHURE_ID")
+
+        saved, created = upsert_saved_brochure(
+            request.user,
+            brochure_id=brochure_id,
+            brochure_title=request.data.get("brochure_title", ""),
+            custom_title=request.data.get("custom_title", ""),
+            original_brochure_data=request.data.get("original_brochure_data", {}),
         )
-        return self.success(SavedBrochureSerializer(saved).data, status_code=status.HTTP_201_CREATED)
+        return self.success(
+            SavedBrochureSerializer(saved).data,
+            status_code=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
 
 
 class MRSavedBrochureDetailView(APIResponseMixin, APIView):
     permission_classes = [IsMR]
 
     def patch(self, request, pk):
-        saved = SavedBrochure.objects.filter(id=pk, mr=request.user).first()
+        saved = get_saved_brochure_for_mr(request.user, pk)
         if not saved:
             return self.error("Not found", code="NOT_FOUND", status_code=404)
         saved.custom_title = request.data.get("custom_title", saved.custom_title)
@@ -461,11 +470,9 @@ class MRSavedBrochureDetailView(APIResponseMixin, APIView):
         return self.success(SavedBrochureSerializer(saved).data)
 
     def delete(self, request, pk):
-        saved = SavedBrochure.objects.filter(id=pk, mr=request.user).first()
+        saved = soft_delete_saved_brochure(request.user, server_id=pk, brochure_id=pk)
         if not saved:
             return self.error("Not found", code="NOT_FOUND", status_code=404)
-        saved.is_deleted = True
-        saved.save(update_fields=["is_deleted"])
         return self.success(message="Removed")
 
 
@@ -500,6 +507,5 @@ class MRBrochureSyncDetailView(APIResponseMixin, APIView):
             mr=request.user, brochure_id=brochure_id
         ).first()
         if sync:
-            sync.is_deleted = True
-            sync.save(update_fields=["is_deleted"])
+            soft_delete_instance(sync, "last_modified")
         return self.success(message="Sync data deleted")

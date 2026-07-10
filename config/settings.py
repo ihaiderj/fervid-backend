@@ -158,8 +158,13 @@ CORS_ALLOW_ALL_ORIGINS = DEBUG and not CORS_ALLOWED_ORIGINS
 
 # File storage
 STORAGE_BACKEND = os.getenv("STORAGE_BACKEND", "local")
-MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "10"))
+# 0 = no app-level upload size limit
+MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "0"))
 ALLOWED_FILE_TYPES = ["application/pdf", "application/zip", "image/jpeg", "image/png", "image/webp"]
+
+# Django defaults (~2.5MB) block large admin/API uploads — raise for brochure files
+DATA_UPLOAD_MAX_MEMORY_SIZE = 524288000  # 500 MB
+FILE_UPLOAD_MAX_MEMORY_SIZE = 524288000
 
 if STORAGE_BACKEND == "s3":
     DEFAULT_FILE_STORAGE = "storages.backends.s3boto3.S3Boto3Storage"

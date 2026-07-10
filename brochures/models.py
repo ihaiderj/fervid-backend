@@ -107,6 +107,12 @@ class SavedBrochure(models.Model):
         db_table = "saved_brochures"
         unique_together = [("mr", "brochure_id")]
 
+    def save(self, *args, **kwargs):
+        from brochures.saved_brochure_service import canonical_brochure_id
+
+        self.brochure_id = canonical_brochure_id(self.brochure_id)
+        super().save(*args, **kwargs)
+
     def __str__(self):
         return f"{self.mr.email} - {self.brochure_id}"
 

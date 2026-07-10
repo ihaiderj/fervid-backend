@@ -2,6 +2,12 @@ from django.utils import timezone
 
 from activity.models import ActivityLog
 from brochures.models import BrochureSync, SavedBrochure
+from brochures.saved_brochure_service import (
+    get_saved_brochure_for_mr,
+    soft_delete_saved_brochure,
+    upsert_saved_brochure,
+)
+from core.soft_delete import soft_delete_instance
 from core.services import log_activity
 from doctors.models import Doctor, DoctorAssignment
 from meetings.models import Meeting, MeetingFollowUp, MeetingSlideNote
@@ -163,26 +169,51 @@ class SyncPushHandler:
         raise ValueError(f"Unknown action: {action}")
 
     def _handle_saved_brochures(self, action, data):
+        if "brochure_id" not in data and not data.get("server_id"):
+            raise ValueError("brochure_id or server_id is required for saved_brochures sync")
+
+        if data.get("is_deleted"):
+            saved = soft_delete_saved_brochure(
+                self.user,
+                brochure_id=data.get("brochure_id"),
+                server_id=data.get("server_id"),
+            )
+            return {"server_id": str(saved.id) if saved else data.get("server_id", "")}
+
         if action == "create":
-            saved, _ = SavedBrochure.objects.update_or_create(
-                mr=self.user,
-                brochure_id=str(data["brochure_id"]),
-                defaults={
-                    "custom_title": data.get("custom_title", ""),
-                    "brochure_title": data.get("brochure_title", ""),
-                    "is_deleted": False,
-                },
+            if "brochure_id" not in data:
+                raise ValueError("brochure_id is required for saved_brochures create")
+            saved, _ = upsert_saved_brochure(
+                self.user,
+                brochure_id=data["brochure_id"],
+                brochure_title=data.get("brochure_title", ""),
+                custom_title=data.get("custom_title", ""),
+                original_brochure_data=data.get("original_brochure_data", {}),
             )
             return {"server_id": str(saved.id)}
         elif action == "update":
-            saved = SavedBrochure.objects.get(mr=self.user, brochure_id=str(data["brochure_id"]))
-            saved.custom_title = data.get("custom_title", saved.custom_title)
+            saved = get_saved_brochure_for_mr(
+                self.user, data.get("server_id") or data.get("brochure_id")
+            )
+            if not saved:
+                raise ValueError("Saved brochure not found")
+            if "custom_title" in data:
+                saved.custom_title = data["custom_title"]
+            if data.get("brochure_title"):
+                saved.brochure_title = data["brochure_title"]
+            if data.get("original_brochure_data"):
+                saved.original_brochure_data = data["original_brochure_data"]
+            saved.is_deleted = False
             saved.save()
             return {"server_id": str(saved.id)}
         elif action == "delete":
-            saved = SavedBrochure.objects.get(mr=self.user, brochure_id=str(data["brochure_id"]))
-            saved.is_deleted = True
-            saved.save(update_fields=["is_deleted"])
+            saved = soft_delete_saved_brochure(
+                self.user,
+                brochure_id=data.get("brochure_id"),
+                server_id=data.get("server_id"),
+            )
+            if not saved:
+                raise ValueError("Saved brochure not found")
             return {"server_id": str(saved.id)}
         raise ValueError(f"Unknown action: {action}")
 
@@ -202,8 +233,7 @@ class SyncPushHandler:
         elif action == "delete":
             sync = BrochureSync.objects.filter(mr=self.user, brochure_id=brochure_id).first()
             if sync:
-                sync.is_deleted = True
-                sync.save(update_fields=["is_deleted"])
+                soft_delete_instance(sync, "last_modified")
                 return {"server_id": str(sync.id)}
         raise ValueError(f"Unknown action: {action}")
 

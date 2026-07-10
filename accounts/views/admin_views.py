@@ -1,7 +1,3 @@
-import os
-import uuid
-
-from django.conf import settings
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.parsers import FormParser, MultiPartParser
@@ -261,7 +257,7 @@ class AdminBrochureListView(APIResponseMixin, APIView):
         file_url = data.get("file_url", "")
         if "file" in request.FILES:
             uploaded = request.FILES["file"]
-            file_url = _save_uploaded_file(uploaded, "brochures")
+            file_url = save_uploaded_file(uploaded, "brochures")
 
         brochure = Brochure.objects.create(
             title=data["title"],
@@ -344,13 +340,4 @@ class AdminMeetingListView(APIResponseMixin, APIView):
         return self.success(MeetingSerializer(meetings, many=True).data)
 
 
-def _save_uploaded_file(uploaded_file, subfolder):
-    ext = os.path.splitext(uploaded_file.name)[1]
-    filename = f"{uuid.uuid4()}{ext}"
-    dest_dir = os.path.join(settings.MEDIA_ROOT, subfolder)
-    os.makedirs(dest_dir, exist_ok=True)
-    dest_path = os.path.join(dest_dir, filename)
-    with open(dest_path, "wb+") as f:
-        for chunk in uploaded_file.chunks():
-            f.write(chunk)
-    return f"{settings.MEDIA_URL}{subfolder}/{filename}"
+from brochures.storage import save_uploaded_file

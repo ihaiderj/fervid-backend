@@ -27,9 +27,9 @@ class SyncPullView(APIResponseMixin, APIView):
         from brochures.models import BrochureSync, SavedBrochure
         from meetings.models import Meeting, MeetingFollowUp, MeetingSlideNote
 
-        def changed_qs(qs, since):
+        def changed_qs(qs, since, ts_field="updated_at"):
             if since:
-                return qs.filter(updated_at__gte=since)
+                return qs.filter(**{f"{ts_field}__gte": since})
             return qs
 
         doctor_ids = DoctorAssignment.objects.filter(
@@ -54,16 +54,18 @@ class SyncPullView(APIResponseMixin, APIView):
                 ).values()
             ),
             "saved_brochures": list(
-                changed_qs(SavedBrochure.objects.filter(mr=user), since).values()
+                changed_qs(
+                    SavedBrochure.objects.filter(mr=user), since, "last_accessed"
+                ).values()
             ),
             "brochure_sync": list(
-                changed_qs(BrochureSync.objects.filter(mr=user), since).values()
+                changed_qs(
+                    BrochureSync.objects.filter(mr=user), since, "last_modified"
+                ).values()
             ),
             "activity_logs": list(
-                (
-                    ActivityLog.objects.filter(user=user, created_at__gte=since)
-                    if since
-                    else ActivityLog.objects.filter(user=user)
+                changed_qs(
+                    ActivityLog.objects.filter(user=user), since, "created_at"
                 ).values()
             ),
             "sync_timestamp": timezone.now().isoformat(),
