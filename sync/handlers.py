@@ -3,14 +3,17 @@ from django.utils import timezone
 from activity.models import ActivityLog
 from brochures.models import BrochureSync, SavedBrochure
 from brochures.saved_brochure_service import (
-    get_saved_brochure_for_mr,
+    create_saved_brochure,
+    get_saved_brochure_by_id,
     soft_delete_saved_brochure,
-    upsert_saved_brochure,
+    update_saved_brochure,
 )
 from core.soft_delete import soft_delete_instance
 from core.services import log_activity
 from doctors.models import Doctor, DoctorAssignment
+from doctors.doctor_service import soft_delete_doctor_for_mr
 from meetings.models import Meeting, MeetingFollowUp, MeetingSlideNote
+from meetings.services import refresh_doctor_meetings_count
 
 
 class SyncPushHandler:
@@ -62,6 +65,14 @@ class SyncPushHandler:
         return handler(action, data)
 
     def _handle_doctors(self, action, data):
+        if data.get("is_deleted") and action in ("create", "update", "delete"):
+            if not data.get("server_id"):
+                raise ValueError("server_id is required to delete doctor via sync")
+            doctor = soft_delete_doctor_for_mr(self.user, data["server_id"])
+            if not doctor:
+                raise ValueError("Doctor not found or not accessible")
+            return {"server_id": str(doctor.id)}
+
         if action == "create":
             doctor = Doctor.objects.create(
                 first_name=data["first_name"],
@@ -80,45 +91,87 @@ class SyncPushHandler:
             )
             return {"server_id": str(doctor.id)}
         elif action == "update":
-            doctor = Doctor.objects.get(id=data["server_id"])
-            for field in ("first_name", "last_name", "specialty", "hospital", "phone", "email", "location", "notes"):
+            doctor = Doctor.objects.get(id=data["server_id"], is_deleted=False)
+            if not DoctorAssignment.objects.filter(
+                doctor=doctor, mr=self.user, status="active"
+            ).exists() and doctor.created_by_id != self.user.id:
+                raise ValueError("Doctor not found or not accessible")
+            for field in (
+                "first_name",
+                "last_name",
+                "specialty",
+                "hospital",
+                "phone",
+                "email",
+                "location",
+                "notes",
+                "profile_image_url",
+            ):
                 if field in data:
                     setattr(doctor, field, data[field])
             doctor.save()
             return {"server_id": str(doctor.id)}
         elif action == "delete":
-            doctor = Doctor.objects.get(id=data["server_id"])
-            doctor.is_deleted = True
-            doctor.save(update_fields=["is_deleted", "updated_at"])
+            doctor = soft_delete_doctor_for_mr(self.user, data["server_id"])
+            if not doctor:
+                raise ValueError("Doctor not found or not accessible")
             return {"server_id": str(doctor.id)}
         raise ValueError(f"Unknown action: {action}")
 
     def _handle_meetings(self, action, data):
         if action == "create":
+            brochure = None
+            brochure_id = data.get("brochure_id")
+            if brochure_id:
+                from brochures.models import Brochure
+
+                brochure = Brochure.objects.filter(id=brochure_id).first()
+
             meeting = Meeting.objects.create(
                 mr=self.user,
                 doctor_id=data["doctor_id"],
+                brochure=brochure,
                 title=data.get("title", "Meeting"),
                 purpose=data.get("purpose", ""),
                 scheduled_date=data.get("scheduled_date", timezone.now()),
                 duration_minutes=data.get("duration_minutes", 30),
+                location=data.get("location", ""),
+                notes=data.get("notes", ""),
                 presentation_slides={
-                    "brochure_id": data.get("brochure_id", ""),
+                    "brochure_id": str(brochure_id or ""),
                     "brochure_title": data.get("brochure_title", ""),
                 },
             )
+            refresh_doctor_meetings_count(meeting.doctor_id)
             return {"server_id": str(meeting.id)}
         elif action == "update":
             meeting = Meeting.objects.get(id=data["server_id"], mr=self.user)
-            for field in ("title", "status", "location", "notes", "scheduled_date", "duration_minutes"):
+            previous_doctor_id = meeting.doctor_id
+            for field in (
+                "title",
+                "status",
+                "location",
+                "notes",
+                "purpose",
+                "scheduled_date",
+                "duration_minutes",
+            ):
                 if field in data:
                     setattr(meeting, field, data[field])
+            if "doctor_id" in data:
+                meeting.doctor_id = data["doctor_id"]
             meeting.save()
+            refresh_doctor_meetings_count(previous_doctor_id)
+            if meeting.doctor_id != previous_doctor_id:
+                refresh_doctor_meetings_count(meeting.doctor_id)
             return {"server_id": str(meeting.id)}
         elif action == "delete":
+            from core.soft_delete import soft_delete_instance
+
             meeting = Meeting.objects.get(id=data["server_id"], mr=self.user)
-            meeting.is_deleted = True
-            meeting.save(update_fields=["is_deleted", "updated_at"])
+            doctor_id = meeting.doctor_id
+            soft_delete_instance(meeting, "updated_at")
+            refresh_doctor_meetings_count(doctor_id)
             return {"server_id": str(meeting.id)}
         raise ValueError(f"Unknown action: {action}")
 
@@ -169,21 +222,16 @@ class SyncPushHandler:
         raise ValueError(f"Unknown action: {action}")
 
     def _handle_saved_brochures(self, action, data):
-        if "brochure_id" not in data and not data.get("server_id"):
-            raise ValueError("brochure_id or server_id is required for saved_brochures sync")
-
-        if data.get("is_deleted"):
-            saved = soft_delete_saved_brochure(
-                self.user,
-                brochure_id=data.get("brochure_id"),
-                server_id=data.get("server_id"),
-            )
-            return {"server_id": str(saved.id) if saved else data.get("server_id", "")}
-
         if action == "create":
             if "brochure_id" not in data:
                 raise ValueError("brochure_id is required for saved_brochures create")
-            saved, _ = upsert_saved_brochure(
+            if data.get("is_deleted"):
+                if not data.get("server_id"):
+                    raise ValueError("server_id is required to delete via sync")
+                saved = soft_delete_saved_brochure(self.user, server_id=data["server_id"])
+                return {"server_id": str(saved.id) if saved else data.get("server_id", "")}
+
+            saved = create_saved_brochure(
                 self.user,
                 brochure_id=data["brochure_id"],
                 brochure_title=data.get("brochure_title", ""),
@@ -191,30 +239,27 @@ class SyncPushHandler:
                 original_brochure_data=data.get("original_brochure_data", {}),
             )
             return {"server_id": str(saved.id)}
-        elif action == "update":
-            saved = get_saved_brochure_for_mr(
-                self.user, data.get("server_id") or data.get("brochure_id")
-            )
+
+        if not data.get("server_id"):
+            raise ValueError("server_id is required for saved_brochures update/delete")
+
+        if data.get("is_deleted") or action == "delete":
+            saved = soft_delete_saved_brochure(self.user, server_id=data["server_id"])
             if not saved:
                 raise ValueError("Saved brochure not found")
-            if "custom_title" in data:
-                saved.custom_title = data["custom_title"]
-            if data.get("brochure_title"):
-                saved.brochure_title = data["brochure_title"]
-            if data.get("original_brochure_data"):
-                saved.original_brochure_data = data["original_brochure_data"]
-            saved.is_deleted = False
-            saved.save()
             return {"server_id": str(saved.id)}
-        elif action == "delete":
-            saved = soft_delete_saved_brochure(
+
+        if action == "update":
+            saved = update_saved_brochure(
                 self.user,
-                brochure_id=data.get("brochure_id"),
-                server_id=data.get("server_id"),
+                data["server_id"],
+                custom_title=data.get("custom_title"),
+                brochure_title=data.get("brochure_title"),
             )
             if not saved:
                 raise ValueError("Saved brochure not found")
             return {"server_id": str(saved.id)}
+
         raise ValueError(f"Unknown action: {action}")
 
     def _handle_brochure_sync(self, action, data):

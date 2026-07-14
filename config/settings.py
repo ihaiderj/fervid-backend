@@ -11,11 +11,31 @@ load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+
+def _detect_lan_ip():
+    """Best-effort local LAN IP for Expo/device testing in DEBUG."""
+    import socket
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("8.8.8.8", 80))
+            return sock.getsockname()[0]
+    except OSError:
+        return None
+
+
 SECRET_KEY = os.getenv("SECRET_KEY", "django-insecure-dev-key-change-in-production")
 DEBUG = os.getenv("DEBUG", "True").lower() in ("true", "1", "yes")
 ALLOWED_HOSTS = [
     h.strip() for h in os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if h.strip()
 ]
+if DEBUG:
+    lan_ip = _detect_lan_ip()
+    if lan_ip and lan_ip not in ALLOWED_HOSTS:
+        ALLOWED_HOSTS.append(lan_ip)
+    # Android emulator alias
+    if "10.0.2.2" not in ALLOWED_HOSTS:
+        ALLOWED_HOSTS.append("10.0.2.2")
 
 INSTALLED_APPS = [
     "django.contrib.admin",

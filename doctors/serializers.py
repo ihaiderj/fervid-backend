@@ -5,6 +5,8 @@ from doctors.models import Doctor, DoctorAssignment
 
 class DoctorSerializer(serializers.ModelSerializer):
     assigned_mr_name = serializers.SerializerMethodField()
+    created_by_name = serializers.SerializerMethodField()
+    created_by_email = serializers.EmailField(source="created_by.email", read_only=True)
 
     class Meta:
         model = Doctor
@@ -24,6 +26,8 @@ class DoctorSerializer(serializers.ModelSerializer):
             "last_meeting_date",
             "next_appointment",
             "assigned_mr_name",
+            "created_by_name",
+            "created_by_email",
             "created_at",
             "updated_at",
         ]
@@ -36,6 +40,9 @@ class DoctorSerializer(serializers.ModelSerializer):
             .first()
         )
         return assignment.mr.full_name if assignment else None
+
+    def get_created_by_name(self, obj):
+        return obj.created_by.full_name if obj.created_by else None
 
 
 class CreateDoctorSerializer(serializers.ModelSerializer):

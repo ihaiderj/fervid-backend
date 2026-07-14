@@ -85,4 +85,22 @@ class DoctorPhotoUploadView(APIResponseMixin, APIView):
             return self.error("No file provided", code="NO_FILE")
 
         file_url = save_uploaded_file(uploaded, "doctor_photos")
+
+        doctor_id = request.data.get("doctor_id")
+        if doctor_id:
+            from doctors.models import Doctor, DoctorAssignment
+
+            doctor = Doctor.objects.filter(id=doctor_id, is_deleted=False).first()
+            if not doctor:
+                return self.error("Doctor not found", code="NOT_FOUND", status_code=404)
+
+            if request.user.role != "admin":
+                if not DoctorAssignment.objects.filter(
+                    doctor=doctor, mr=request.user, status="active"
+                ).exists():
+                    return self.error("Not assigned to this doctor", code="FORBIDDEN", status_code=403)
+
+            doctor.profile_image_url = file_url
+            doctor.save(update_fields=["profile_image_url", "updated_at"])
+
         return self.success({"file_url": file_url}, status_code=201)

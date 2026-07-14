@@ -72,14 +72,15 @@ class MeetingSerializer(serializers.ModelSerializer):
 
 
 class MRMeetingSerializer(serializers.ModelSerializer):
-    meeting_id = serializers.UUIDField(source="id")
-    doctor_id = serializers.UUIDField(source="doctor_id")
+    meeting_id = serializers.UUIDField(source="id", read_only=True)
     doctor_name = serializers.SerializerMethodField()
-    doctor_specialty = serializers.CharField(source="doctor.specialty")
-    hospital = serializers.CharField(source="doctor.hospital")
+    doctor_specialty = serializers.CharField(source="doctor.specialty", read_only=True)
+    hospital = serializers.CharField(source="doctor.hospital", read_only=True)
+    brochure_title = serializers.SerializerMethodField()
+    brochure_id = serializers.SerializerMethodField()
     notes_count = serializers.SerializerMethodField()
     last_note_date = serializers.SerializerMethodField()
-    profile_image_url = serializers.CharField(source="doctor.profile_image_url")
+    profile_image_url = serializers.CharField(source="doctor.profile_image_url", read_only=True)
 
     class Meta:
         model = Meeting
@@ -96,6 +97,7 @@ class MRMeetingSerializer(serializers.ModelSerializer):
             "status",
             "purpose",
             "notes",
+            "brochure_id",
             "brochure_title",
             "notes_count",
             "last_note_date",
@@ -110,6 +112,16 @@ class MRMeetingSerializer(serializers.ModelSerializer):
 
     def get_doctor_name(self, obj):
         return f"Dr. {obj.doctor.first_name} {obj.doctor.last_name}"
+
+    def get_brochure_title(self, obj):
+        return obj.brochure_title
+
+    def get_brochure_id(self, obj):
+        if obj.brochure_id:
+            return str(obj.brochure_id)
+        slides = obj.presentation_slides or {}
+        brochure_id = slides.get("brochure_id")
+        return str(brochure_id) if brochure_id else None
 
     def get_notes_count(self, obj):
         return obj.slide_notes.filter(is_deleted=False).count()

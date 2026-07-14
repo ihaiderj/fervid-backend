@@ -42,7 +42,7 @@ urlpatterns = [
     path("meetings/<uuid:pk>/followup/", MRLegacyFollowUpView.as_view()),
     path("followups/<uuid:pk>/", MRFollowUpDetailView.as_view()),
     path("saved-brochures/", MRSavedBrochureView.as_view()),
-    path("saved-brochures/<str:pk>/", MRSavedBrochureDetailView.as_view()),
+    path("saved-brochures/<uuid:pk>/", MRSavedBrochureDetailView.as_view()),
     path("brochure-sync/", MRBrochureSyncView.as_view()),
     path("brochure-sync/<str:brochure_id>/", MRBrochureSyncDetailView.as_view()),
 ]

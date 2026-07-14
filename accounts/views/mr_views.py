@@ -7,9 +7,10 @@ from rest_framework.views import APIView
 from brochures.storage import save_uploaded_file
 from brochures.models import Brochure, BrochureSync, SavedBrochure
 from brochures.saved_brochure_service import (
-    get_saved_brochure_for_mr,
+    create_saved_brochure,
+    get_saved_brochure_by_id,
     soft_delete_saved_brochure,
-    upsert_saved_brochure,
+    update_saved_brochure,
 )
 from core.soft_delete import soft_delete_instance
 from brochures.serializers import (
@@ -22,8 +23,10 @@ from core.mixins import APIResponseMixin
 from core.permissions import CanManageDoctors, CanUploadBrochures, IsMR
 from core.services import get_mr_dashboard_stats, log_activity
 from doctors.models import Doctor, DoctorAssignment
+from doctors.doctor_service import soft_delete_doctor_for_mr
 from doctors.serializers import CreateDoctorSerializer, MRAssignedDoctorSerializer
 from meetings.models import Meeting, MeetingFollowUp, MeetingSlideNote
+from meetings.services import refresh_doctor_meetings_count
 from meetings.serializers import (
     AddSlideNoteSerializer,
     CreateFollowUpSerializer,
@@ -202,14 +205,10 @@ class MRDoctorAssignmentView(APIResponseMixin, APIView):
         return self.success(MRAssignedDoctorSerializer(doctor).data)
 
     def delete(self, request, pk):
-        assignment = DoctorAssignment.objects.filter(
-            doctor_id=pk, mr=request.user, status="active"
-        ).first()
-        if not assignment:
-            return self.error("Assignment not found", code="NOT_FOUND", status_code=404)
-        assignment.status = "inactive"
-        assignment.save(update_fields=["status"])
-        return self.success(message="Assignment removed")
+        doctor = soft_delete_doctor_for_mr(request.user, pk)
+        if not doctor:
+            return self.error("Doctor not found", code="NOT_FOUND", status_code=404)
+        return self.success(message="Doctor deleted")
 
 
 class MRMeetingListView(APIResponseMixin, APIView):
@@ -254,8 +253,15 @@ class MRMeetingListView(APIResponseMixin, APIView):
                 "brochure_title": data.get("brochure_title", ""),
             },
         )
+        refresh_doctor_meetings_count(meeting.doctor_id)
+        meeting = (
+            Meeting.objects.select_related("doctor", "brochure")
+            .prefetch_related("slide_notes")
+            .get(id=meeting.id)
+        )
         return self.success(
-            {"meeting_id": str(meeting.id)}, status_code=status.HTTP_201_CREATED
+            MRMeetingSerializer(meeting).data,
+            status_code=status.HTTP_201_CREATED,
         )
 
 
@@ -304,9 +310,16 @@ class MRMeetingDetailView(APIResponseMixin, APIView):
 
         serializer = UpdateMeetingSerializer(data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
+        previous_doctor_id = meeting.doctor_id
         for field, value in serializer.validated_data.items():
             setattr(meeting, field, value)
         meeting.save()
+        refresh_doctor_meetings_count(previous_doctor_id)
+        if meeting.doctor_id != previous_doctor_id:
+            refresh_doctor_meetings_count(meeting.doctor_id)
+        meeting = Meeting.objects.select_related("doctor", "brochure").prefetch_related(
+            "slide_notes"
+        ).get(id=meeting.id)
         return self.success(MRMeetingSerializer(meeting).data)
 
     def delete(self, request, pk):
@@ -314,8 +327,9 @@ class MRMeetingDetailView(APIResponseMixin, APIView):
             meeting = Meeting.objects.get(id=pk, mr=request.user)
         except Meeting.DoesNotExist:
             return self.error("Meeting not found", code="NOT_FOUND", status_code=404)
-        meeting.is_deleted = True
-        meeting.save(update_fields=["is_deleted", "updated_at"])
+        doctor_id = meeting.doctor_id
+        soft_delete_instance(meeting, "updated_at")
+        refresh_doctor_meetings_count(doctor_id)
         return self.success(message="Meeting deleted")
 
 
@@ -437,7 +451,9 @@ class MRSavedBrochureView(APIResponseMixin, APIView):
     permission_classes = [IsMR]
 
     def get(self, request):
-        saved = SavedBrochure.objects.filter(mr=request.user, is_deleted=False)
+        saved = SavedBrochure.objects.filter(mr=request.user, is_deleted=False).order_by(
+            "-saved_at"
+        )
         return self.success(SavedBrochureSerializer(saved, many=True).data)
 
     def post(self, request):
@@ -445,7 +461,7 @@ class MRSavedBrochureView(APIResponseMixin, APIView):
         if not brochure_id:
             return self.error("brochure_id is required", code="MISSING_BROCHURE_ID")
 
-        saved, created = upsert_saved_brochure(
+        saved = create_saved_brochure(
             request.user,
             brochure_id=brochure_id,
             brochure_title=request.data.get("brochure_title", ""),
@@ -454,7 +470,7 @@ class MRSavedBrochureView(APIResponseMixin, APIView):
         )
         return self.success(
             SavedBrochureSerializer(saved).data,
-            status_code=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+            status_code=status.HTTP_201_CREATED,
         )
 
 
@@ -462,15 +478,18 @@ class MRSavedBrochureDetailView(APIResponseMixin, APIView):
     permission_classes = [IsMR]
 
     def patch(self, request, pk):
-        saved = get_saved_brochure_for_mr(request.user, pk)
+        saved = update_saved_brochure(
+            request.user,
+            pk,
+            custom_title=request.data.get("custom_title"),
+            brochure_title=request.data.get("brochure_title"),
+        )
         if not saved:
             return self.error("Not found", code="NOT_FOUND", status_code=404)
-        saved.custom_title = request.data.get("custom_title", saved.custom_title)
-        saved.save()
         return self.success(SavedBrochureSerializer(saved).data)
 
     def delete(self, request, pk):
-        saved = soft_delete_saved_brochure(request.user, server_id=pk, brochure_id=pk)
+        saved = soft_delete_saved_brochure(request.user, server_id=pk)
         if not saved:
             return self.error("Not found", code="NOT_FOUND", status_code=404)
         return self.success(message="Removed")
