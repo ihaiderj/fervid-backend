@@ -12,8 +12,11 @@ from core.soft_delete import soft_delete_instance
 from core.services import log_activity
 from doctors.models import Doctor, DoctorAssignment
 from doctors.doctor_service import soft_delete_doctor_for_mr
-from meetings.models import Meeting, MeetingFollowUp, MeetingSlideNote
-from meetings.services import refresh_doctor_meetings_count
+from meetings.models import Meeting, MeetingFollowUp, MeetingNote, MeetingSlideNote
+from meetings.services import (
+    refresh_doctor_meetings_count,
+    refresh_meeting_presentation_slides,
+)
 
 
 class SyncPushHandler:
@@ -23,6 +26,7 @@ class SyncPushHandler:
         "doctors",
         "meetings",
         "meeting_notes",
+        "meeting_general_notes",
         "meeting_slide_notes",
         "meeting_followups",
         "saved_brochures",
@@ -176,25 +180,67 @@ class SyncPushHandler:
         raise ValueError(f"Unknown action: {action}")
 
     def _handle_meeting_notes(self, action, data):
-        return self._handle_meeting_slide_notes(action, data)
+        # Slide notes carry a slide_id; general meeting notes do not.
+        if data.get("slide_id"):
+            return self._handle_meeting_slide_notes(action, data)
+        return self._handle_meeting_general_notes(action, data)
+
+    def _handle_meeting_general_notes(self, action, data):
+        if action == "create":
+            note = MeetingNote.objects.create(
+                meeting_id=data["meeting_id"],
+                title=data.get("title", ""),
+                notes=data.get("notes", ""),
+            )
+            return {"server_id": str(note.id)}
+        elif action == "update":
+            note = MeetingNote.objects.get(id=data["server_id"])
+            for field in ("title", "notes"):
+                if field in data:
+                    setattr(note, field, data[field])
+            note.save()
+            return {"server_id": str(note.id)}
+        elif action == "delete":
+            note = MeetingNote.objects.get(id=data["server_id"])
+            note.is_deleted = True
+            note.save(update_fields=["is_deleted", "updated_at"])
+            return {"server_id": str(note.id)}
+        raise ValueError(f"Unknown action: {action}")
 
     def _handle_meeting_slide_notes(self, action, data):
         if action == "create":
             note = MeetingSlideNote.objects.create(
                 meeting_id=data["meeting_id"],
                 slide_id=data["slide_id"],
+                slide_title=data.get("slide_title", ""),
+                slide_order=data.get("slide_order", 0),
+                brochure_id=data.get("brochure_id", ""),
+                brochure_title=data.get("brochure_title") or data.get("custom_title", ""),
                 note_text=data.get("note_text", ""),
             )
+            refresh_meeting_presentation_slides(note.meeting)
             return {"server_id": str(note.id)}
         elif action == "update":
             note = MeetingSlideNote.objects.get(id=data["server_id"])
-            note.note_text = data.get("note_text", note.note_text)
+            if "custom_title" in data and "brochure_title" not in data:
+                note.brochure_title = data["custom_title"]
+            for field in (
+                "slide_title",
+                "slide_order",
+                "brochure_id",
+                "brochure_title",
+                "note_text",
+            ):
+                if field in data:
+                    setattr(note, field, data[field])
             note.save()
+            refresh_meeting_presentation_slides(note.meeting)
             return {"server_id": str(note.id)}
         elif action == "delete":
             note = MeetingSlideNote.objects.get(id=data["server_id"])
             note.is_deleted = True
             note.save(update_fields=["is_deleted", "updated_at"])
+            refresh_meeting_presentation_slides(note.meeting)
             return {"server_id": str(note.id)}
         raise ValueError(f"Unknown action: {action}")
 

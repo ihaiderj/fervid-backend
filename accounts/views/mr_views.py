@@ -25,17 +25,24 @@ from core.services import get_mr_dashboard_stats, log_activity
 from doctors.models import Doctor, DoctorAssignment
 from doctors.doctor_service import soft_delete_doctor_for_mr
 from doctors.serializers import CreateDoctorSerializer, MRAssignedDoctorSerializer
-from meetings.models import Meeting, MeetingFollowUp, MeetingSlideNote
-from meetings.services import refresh_doctor_meetings_count
+from meetings.models import Meeting, MeetingFollowUp, MeetingNote, MeetingSlideNote
+from meetings.services import (
+    refresh_doctor_meetings_count,
+    refresh_meeting_presentation_slides,
+)
 from meetings.serializers import (
     AddSlideNoteSerializer,
     CreateFollowUpSerializer,
+    CreateMeetingNoteSerializer,
     CreateMeetingSerializer,
     LegacyFollowUpSerializer,
+    MeetingNoteSerializer,
     MRMeetingSerializer,
     MRUpcomingMeetingSerializer,
     MeetingFollowUpSerializer,
     SlideNoteSerializer,
+    UpdateMeetingNoteSerializer,
+    UpdateSlideNoteSerializer,
     UpdateMeetingSerializer,
 )
 
@@ -295,10 +302,12 @@ class MRMeetingDetailView(APIResponseMixin, APIView):
             return self.error("Meeting not found", code="NOT_FOUND", status_code=404)
 
         notes = meeting.slide_notes.filter(is_deleted=False)
+        general_notes = meeting.general_notes.filter(is_deleted=False)
         return self.success(
             {
                 "meeting": MRMeetingSerializer(meeting).data,
                 "slide_notes": SlideNoteSerializer(notes, many=True).data,
+                "general_notes": MeetingNoteSerializer(general_notes, many=True).data,
             }
         )
 
@@ -346,6 +355,7 @@ class MRMeetingNotesView(APIResponseMixin, APIView):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
         note = MeetingSlideNote.objects.create(meeting=meeting, **data)
+        refresh_meeting_presentation_slides(meeting)
         return self.success(
             SlideNoteSerializer(note).data, status_code=status.HTTP_201_CREATED
         )
@@ -357,16 +367,75 @@ class MRMeetingNoteDetailView(APIResponseMixin, APIView):
     def patch(self, request, pk, note_id):
         note = MeetingSlideNote.objects.filter(
             id=note_id, meeting_id=pk, meeting__mr=request.user, is_deleted=False
-        ).first()
+        ).select_related("meeting").first()
         if not note:
             return self.error("Note not found", code="NOT_FOUND", status_code=404)
-        note.note_text = request.data.get("note_text", note.note_text)
+
+        serializer = UpdateSlideNoteSerializer(data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        for field, value in serializer.validated_data.items():
+            setattr(note, field, value)
         note.save()
+        refresh_meeting_presentation_slides(note.meeting)
         return self.success(SlideNoteSerializer(note).data)
 
     def delete(self, request, pk, note_id):
         note = MeetingSlideNote.objects.filter(
             id=note_id, meeting_id=pk, meeting__mr=request.user
+        ).select_related("meeting").first()
+        if not note:
+            return self.error("Note not found", code="NOT_FOUND", status_code=404)
+        note.is_deleted = True
+        note.save(update_fields=["is_deleted", "updated_at"])
+        refresh_meeting_presentation_slides(note.meeting)
+        return self.success(message="Note deleted")
+
+
+class MRMeetingGeneralNotesView(APIResponseMixin, APIView):
+    """General meeting notes (title + notes) \u2014 distinct from slide notes."""
+
+    permission_classes = [IsMR]
+
+    def get(self, request, pk):
+        notes = MeetingNote.objects.filter(
+            meeting_id=pk, meeting__mr=request.user, is_deleted=False
+        )
+        return self.success(MeetingNoteSerializer(notes, many=True).data)
+
+    def post(self, request, pk):
+        try:
+            meeting = Meeting.objects.get(id=pk, mr=request.user, is_deleted=False)
+        except Meeting.DoesNotExist:
+            return self.error("Meeting not found", code="NOT_FOUND", status_code=404)
+
+        serializer = CreateMeetingNoteSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        note = MeetingNote.objects.create(meeting=meeting, **serializer.validated_data)
+        return self.success(
+            MeetingNoteSerializer(note).data, status_code=status.HTTP_201_CREATED
+        )
+
+
+class MRMeetingGeneralNoteDetailView(APIResponseMixin, APIView):
+    permission_classes = [IsMR]
+
+    def patch(self, request, note_id):
+        note = MeetingNote.objects.filter(
+            id=note_id, meeting__mr=request.user, is_deleted=False
+        ).first()
+        if not note:
+            return self.error("Note not found", code="NOT_FOUND", status_code=404)
+
+        serializer = UpdateMeetingNoteSerializer(data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        for field, value in serializer.validated_data.items():
+            setattr(note, field, value)
+        note.save()
+        return self.success(MeetingNoteSerializer(note).data)
+
+    def delete(self, request, note_id):
+        note = MeetingNote.objects.filter(
+            id=note_id, meeting__mr=request.user
         ).first()
         if not note:
             return self.error("Note not found", code="NOT_FOUND", status_code=404)

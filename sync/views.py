@@ -25,7 +25,12 @@ class SyncPullView(APIResponseMixin, APIView):
 
         from doctors.models import Doctor, DoctorAssignment
         from brochures.models import BrochureSync, SavedBrochure
-        from meetings.models import Meeting, MeetingFollowUp, MeetingSlideNote
+        from meetings.models import (
+            Meeting,
+            MeetingFollowUp,
+            MeetingNote,
+            MeetingSlideNote,
+        )
 
         def changed_qs(qs, since, ts_field="updated_at"):
             if since:
@@ -46,6 +51,11 @@ class SyncPullView(APIResponseMixin, APIView):
             "meeting_slide_notes": list(
                 changed_qs(
                     MeetingSlideNote.objects.filter(meeting__mr=user), since
+                ).values()
+            ),
+            "meeting_notes": list(
+                changed_qs(
+                    MeetingNote.objects.filter(meeting__mr=user), since
                 ).values()
             ),
             "meeting_followups": list(

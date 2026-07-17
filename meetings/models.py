@@ -39,7 +39,7 @@ class Meeting(models.Model):
     status = models.CharField(
         max_length=20, choices=Status.choices, default=Status.SCHEDULED
     )
-    location = models.TextField(blank=True, default="")
+    location = models.TextField(blank=True, null=True)
     notes = models.TextField(blank=True, default="")
     purpose = models.TextField(blank=True, default="")
     follow_up_required = models.BooleanField(default=False)
@@ -67,6 +67,30 @@ class Meeting(models.Model):
         return slides.get("brochure_title", "")
 
 
+class MeetingNote(models.Model):
+    """General meeting note (title + notes). Distinct from slide notes; no brochure."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    meeting = models.ForeignKey(
+        Meeting,
+        on_delete=models.CASCADE,
+        related_name="general_notes",
+        db_column="meeting_id",
+    )
+    title = models.TextField(blank=True, default="")
+    notes = models.TextField(blank=True, default="")
+    is_deleted = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "meeting_notes"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return self.title or f"Note ({self.meeting_id})"
+
+
 class MeetingSlideNote(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     meeting = models.ForeignKey(
@@ -79,6 +103,7 @@ class MeetingSlideNote(models.Model):
     slide_title = models.TextField(blank=True, default="")
     slide_order = models.IntegerField(default=0)
     brochure_id = models.TextField(blank=True, default="")
+    brochure_title = models.TextField(blank=True, default="")
     note_text = models.TextField(blank=True, default="")
     slide_image_uri = models.TextField(blank=True, default="")
     is_deleted = models.BooleanField(default=False)

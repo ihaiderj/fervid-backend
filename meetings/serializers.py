@@ -1,6 +1,36 @@
 from rest_framework import serializers
 
-from meetings.models import Meeting, MeetingFollowUp, MeetingSlideNote
+from meetings.models import Meeting, MeetingFollowUp, MeetingNote, MeetingSlideNote
+
+
+class MeetingNoteSerializer(serializers.ModelSerializer):
+    note_id = serializers.UUIDField(source="id", read_only=True)
+
+    class Meta:
+        model = MeetingNote
+        fields = [
+            "note_id",
+            "meeting_id",
+            "title",
+            "notes",
+            "created_at",
+            "updated_at",
+        ]
+
+
+class CreateMeetingNoteSerializer(serializers.Serializer):
+    title = serializers.CharField(required=False, allow_blank=True)
+    notes = serializers.CharField(required=False, allow_blank=True)
+
+    def validate(self, attrs):
+        if not attrs.get("title") and not attrs.get("notes"):
+            raise serializers.ValidationError("Provide a title or notes.")
+        return attrs
+
+
+class UpdateMeetingNoteSerializer(serializers.Serializer):
+    title = serializers.CharField(required=False, allow_blank=True)
+    notes = serializers.CharField(required=False, allow_blank=True)
 
 
 class SlideNoteSerializer(serializers.ModelSerializer):
@@ -15,6 +45,7 @@ class SlideNoteSerializer(serializers.ModelSerializer):
             "slide_order",
             "note_text",
             "brochure_id",
+            "brochure_title",
             "created_at",
             "updated_at",
         ]
@@ -99,6 +130,7 @@ class MRMeetingSerializer(serializers.ModelSerializer):
             "notes",
             "brochure_id",
             "brochure_title",
+            "presentation_slides",
             "notes_count",
             "last_note_date",
             "follow_up_required",
@@ -139,7 +171,7 @@ class CreateMeetingSerializer(serializers.Serializer):
     purpose = serializers.CharField(required=False, allow_blank=True)
     scheduled_date = serializers.DateTimeField(required=False)
     duration_minutes = serializers.IntegerField(default=30)
-    location = serializers.CharField(required=False, allow_blank=True)
+    location = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     notes = serializers.CharField(required=False, allow_blank=True)
 
 
@@ -149,7 +181,7 @@ class UpdateMeetingSerializer(serializers.Serializer):
     scheduled_date = serializers.DateTimeField(required=False)
     duration_minutes = serializers.IntegerField(required=False)
     status = serializers.CharField(required=False)
-    location = serializers.CharField(required=False, allow_blank=True)
+    location = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     notes = serializers.CharField(required=False, allow_blank=True)
     purpose = serializers.CharField(required=False, allow_blank=True)
 
@@ -159,7 +191,31 @@ class AddSlideNoteSerializer(serializers.Serializer):
     slide_title = serializers.CharField(required=False, allow_blank=True)
     slide_order = serializers.IntegerField(default=0)
     brochure_id = serializers.CharField(required=False, allow_blank=True)
+    brochure_title = serializers.CharField(required=False, allow_blank=True)
+    custom_title = serializers.CharField(required=False, allow_blank=True, write_only=True)
     note_text = serializers.CharField()
+
+    def validate(self, attrs):
+        # Accept `custom_title` as an alias for `brochure_title`.
+        custom_title = attrs.pop("custom_title", None)
+        if custom_title and not attrs.get("brochure_title"):
+            attrs["brochure_title"] = custom_title
+        return attrs
+
+
+class UpdateSlideNoteSerializer(serializers.Serializer):
+    slide_title = serializers.CharField(required=False, allow_blank=True)
+    slide_order = serializers.IntegerField(required=False)
+    brochure_id = serializers.CharField(required=False, allow_blank=True)
+    brochure_title = serializers.CharField(required=False, allow_blank=True)
+    custom_title = serializers.CharField(required=False, allow_blank=True, write_only=True)
+    note_text = serializers.CharField(required=False, allow_blank=True)
+
+    def validate(self, attrs):
+        custom_title = attrs.pop("custom_title", None)
+        if custom_title is not None and "brochure_title" not in attrs:
+            attrs["brochure_title"] = custom_title
+        return attrs
 
 
 class CreateFollowUpSerializer(serializers.Serializer):
