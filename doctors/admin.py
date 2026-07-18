@@ -12,7 +12,9 @@ class DoctorAssignmentInline(admin.TabularInline):
     model = DoctorAssignment
     extra = 0
     fk_name = "doctor"
-    readonly_fields = ("assigned_at",)
+    fields = ("mr", "assigned_by", "status", "transferred_at", "notes", "assigned_at")
+    readonly_fields = ("assigned_by", "assigned_at")
+    autocomplete_fields = ("mr",)
 
 
 @admin.register(Doctor)
@@ -41,9 +43,17 @@ class DoctorAdmin(ImportExportModelAdmin):
         "created_by__first_name",
         "created_by__last_name",
     )
-    autocomplete_fields = ("created_by",)
+    autocomplete_fields = ()
     inlines = [DoctorAssignmentInline]
-    readonly_fields = ("id", "profile_image_preview", "created_at", "updated_at")
+    readonly_fields = (
+        "id",
+        "profile_image_preview",
+        "created_by",
+        "slide_groups_panel",
+        "meetings_panel",
+        "created_at",
+        "updated_at",
+    )
 
     fieldsets = (
         (
@@ -82,6 +92,23 @@ class DoctorAdmin(ImportExportModelAdmin):
                     "created_at",
                     "updated_at",
                 ),
+            },
+        ),
+        (
+            "Slide groups (from brochure sync)",
+            {
+                "description": (
+                    "Groups whose doctorId matches this doctor's server id, "
+                    "or whose name matches this doctor (e.g. \"Askari Haider\")."
+                ),
+                "fields": ("slide_groups_panel",),
+            },
+        ),
+        (
+            "Meetings with this doctor",
+            {
+                "description": "All non-deleted meetings linked to this doctor.",
+                "fields": ("meetings_panel",),
             },
         ),
     )
@@ -133,6 +160,110 @@ class DoctorAdmin(ImportExportModelAdmin):
         if "is_deleted__exact" in request.GET:
             return qs
         return qs.filter(is_deleted=False)
+
+    @admin.display(description="Slide groups")
+    def slide_groups_panel(self, obj):
+        from django.utils.safestring import mark_safe
+
+        from brochures.slide_preview import find_groups_for_doctor
+
+        items = find_groups_for_doctor(obj)
+        if not items:
+            return mark_safe(
+                "<p style='color:#666'>No slide groups linked to this doctor yet. "
+                "Groups match by <code>doctorId</code> (server UUID) or by group name "
+                "(e.g. &quot;Askari Haider&quot;).</p>"
+            )
+
+        rows = []
+        for item in items:
+            group = item["group"]
+            sync = item["sync"]
+            slide_ids = group.get("slideIds") or group.get("slide_ids") or []
+            color = group.get("color") or "#ccc"
+            rows.append(
+                format_html(
+                    "<tr>"
+                    "<td style='padding:8px'>"
+                    "<span style='display:inline-block;width:12px;height:12px;"
+                    "border-radius:2px;background:{};margin-right:6px'></span>"
+                    "<strong>{}</strong></td>"
+                    "<td style='padding:8px'>{}</td>"
+                    "<td style='padding:8px'>"
+                    "<a href='/admin/brochures/brochuresync/{}/change/'>{}</a>"
+                    "<br><span style='color:#999;font-size:11px'>{}</span></td>"
+                    "<td style='padding:8px'>{}</td>"
+                    "<td style='padding:8px;font-size:12px'>{}</td>"
+                    "</tr>",
+                    color,
+                    group.get("name") or "—",
+                    group.get("doctorId") or group.get("doctor_id") or "—",
+                    sync.id,
+                    sync.brochure_title or sync.brochure_id,
+                    sync.mr.email if sync.mr_id else "",
+                    len(slide_ids),
+                    ", ".join(slide_ids[:8]) + ("…" if len(slide_ids) > 8 else ""),
+                )
+            )
+        return mark_safe(
+            "<table style='border-collapse:collapse;width:100%;max-width:1000px'>"
+            "<thead><tr style='background:#f0f0f0'>"
+            "<th style='padding:8px;text-align:left'>Group</th>"
+            "<th style='padding:8px;text-align:left'>Doctor id</th>"
+            "<th style='padding:8px;text-align:left'>Brochure sync</th>"
+            "<th style='padding:8px;text-align:left'># slides</th>"
+            "<th style='padding:8px;text-align:left'>Slide ids</th>"
+            "</tr></thead><tbody>"
+            + "".join(str(r) for r in rows)
+            + "</tbody></table>"
+        )
+
+    @admin.display(description="Meetings")
+    def meetings_panel(self, obj):
+        from django.utils.safestring import mark_safe
+
+        from meetings.models import Meeting
+
+        meetings = (
+            Meeting.objects.filter(doctor=obj, is_deleted=False)
+            .select_related("mr")
+            .order_by("-scheduled_date")
+        )
+        if not meetings.exists():
+            return mark_safe("<p style='color:#666'>No meetings for this doctor.</p>")
+
+        rows = []
+        for m in meetings:
+            rows.append(
+                format_html(
+                    "<tr>"
+                    "<td style='padding:8px'>"
+                    "<a href='/admin/meetings/meeting/{}/change/'><strong>{}</strong></a></td>"
+                    "<td style='padding:8px'>{}</td>"
+                    "<td style='padding:8px'>{}</td>"
+                    "<td style='padding:8px'>{}</td>"
+                    "<td style='padding:8px'>{}</td>"
+                    "</tr>",
+                    m.id,
+                    m.title,
+                    m.mr.email if m.mr_id else "—",
+                    m.scheduled_date.strftime("%Y-%m-%d %H:%M") if m.scheduled_date else "—",
+                    m.status,
+                    m.purpose or "—",
+                )
+            )
+        return mark_safe(
+            "<table style='border-collapse:collapse;width:100%;max-width:1000px'>"
+            "<thead><tr style='background:#f0f0f0'>"
+            "<th style='padding:8px;text-align:left'>Meeting</th>"
+            "<th style='padding:8px;text-align:left'>MR</th>"
+            "<th style='padding:8px;text-align:left'>Scheduled</th>"
+            "<th style='padding:8px;text-align:left'>Status</th>"
+            "<th style='padding:8px;text-align:left'>Purpose</th>"
+            "</tr></thead><tbody>"
+            + "".join(str(r) for r in rows)
+            + "</tbody></table>"
+        )
 
 
 @admin.register(DoctorAssignment)

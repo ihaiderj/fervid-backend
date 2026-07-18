@@ -1,3 +1,5 @@
+import uuid as uuid_mod
+
 from django.utils import timezone
 
 from activity.models import ActivityLog
@@ -17,6 +19,17 @@ from meetings.services import (
     refresh_doctor_meetings_count,
     refresh_meeting_presentation_slides,
 )
+
+
+def _parse_client_uuid(data):
+    """Optional client-generated UUID for idempotent creates (id / client_id / local_uuid)."""
+    raw = data.get("id") or data.get("client_id") or data.get("local_uuid")
+    if not raw:
+        return None
+    try:
+        return uuid_mod.UUID(str(raw))
+    except (ValueError, TypeError, AttributeError):
+        return None
 
 
 class SyncPushHandler:
@@ -78,7 +91,20 @@ class SyncPushHandler:
             return {"server_id": str(doctor.id)}
 
         if action == "create":
-            doctor = Doctor.objects.create(
+            client_id = _parse_client_uuid(data)
+            if client_id:
+                existing = Doctor.objects.filter(id=client_id).first()
+                if existing:
+                    # Idempotent retry of the same create.
+                    DoctorAssignment.objects.get_or_create(
+                        doctor=existing,
+                        mr=self.user,
+                        status="active",
+                        defaults={"assigned_by": self.user},
+                    )
+                    return {"server_id": str(existing.id)}
+
+            create_kwargs = dict(
                 first_name=data["first_name"],
                 last_name=data["last_name"],
                 specialty=data["specialty"],
@@ -90,6 +116,10 @@ class SyncPushHandler:
                 profile_image_url=data.get("profile_image_url", ""),
                 created_by=self.user,
             )
+            if client_id:
+                create_kwargs["id"] = client_id
+
+            doctor = Doctor.objects.create(**create_kwargs)
             DoctorAssignment.objects.create(
                 doctor=doctor, mr=self.user, assigned_by=self.user, status="active"
             )
@@ -124,6 +154,12 @@ class SyncPushHandler:
 
     def _handle_meetings(self, action, data):
         if action == "create":
+            client_id = _parse_client_uuid(data)
+            if client_id:
+                existing = Meeting.objects.filter(id=client_id, mr=self.user).first()
+                if existing:
+                    return {"server_id": str(existing.id)}
+
             brochure = None
             brochure_id = data.get("brochure_id")
             if brochure_id:
@@ -131,7 +167,7 @@ class SyncPushHandler:
 
                 brochure = Brochure.objects.filter(id=brochure_id).first()
 
-            meeting = Meeting.objects.create(
+            create_kwargs = dict(
                 mr=self.user,
                 doctor_id=data["doctor_id"],
                 brochure=brochure,
@@ -146,6 +182,10 @@ class SyncPushHandler:
                     "brochure_title": data.get("brochure_title", ""),
                 },
             )
+            if client_id:
+                create_kwargs["id"] = client_id
+
+            meeting = Meeting.objects.create(**create_kwargs)
             refresh_doctor_meetings_count(meeting.doctor_id)
             return {"server_id": str(meeting.id)}
         elif action == "update":
@@ -310,15 +350,33 @@ class SyncPushHandler:
 
     def _handle_brochure_sync(self, action, data):
         brochure_id = str(data.get("brochureId") or data.get("brochure_id", ""))
+        if not brochure_id:
+            raise ValueError("brochure_id is required for brochure_sync")
+
         if action in ("create", "update"):
+            brochure_title = (
+                data.get("brochure_title")
+                or data.get("title")
+                or data.get("custom_title")
+                or ""
+            )
+            # Prefer explicit brochure_data; do not wipe existing customizations if omitted.
+            defaults = {
+                "brochure_title": brochure_title,
+                "is_deleted": False,
+            }
+            if "brochure_data" in data:
+                defaults["brochure_data"] = data.get("brochure_data") or {}
+            elif "slides" in data or "groups" in data:
+                defaults["brochure_data"] = {
+                    "slides": data.get("slides") or [],
+                    "groups": data.get("groups") or data.get("slide_groups") or [],
+                }
+
             sync, _ = BrochureSync.objects.update_or_create(
                 mr=self.user,
                 brochure_id=brochure_id,
-                defaults={
-                    "brochure_title": data.get("title", ""),
-                    "brochure_data": data.get("brochure_data", data),
-                    "is_deleted": False,
-                },
+                defaults=defaults,
             )
             return {"server_id": str(sync.id)}
         elif action == "delete":
@@ -326,15 +384,26 @@ class SyncPushHandler:
             if sync:
                 soft_delete_instance(sync, "last_modified")
                 return {"server_id": str(sync.id)}
+            return {"server_id": ""}
         raise ValueError(f"Unknown action: {action}")
 
     def _handle_activity_logs(self, action, data):
         if action == "create":
+            activity_type = (
+                data.get("activity_type")
+                or data.get("action")
+                or data.get("type")
+                or ""
+            )
             log = log_activity(
                 self.user,
-                activity_type=data.get("activity_type", ""),
+                action=data.get("action", ""),
+                activity_type=activity_type,
+                entity_type=data.get("entity_type", ""),
+                entity_id=data.get("entity_id") or data.get("server_id"),
                 description=data.get("description", ""),
-                metadata=data.get("metadata"),
+                details=data.get("details"),
+                metadata=data.get("metadata") or data.get("details"),
             )
             return {"server_id": str(log.id)}
         raise ValueError(f"Unknown action: {action}")

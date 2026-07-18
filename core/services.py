@@ -27,9 +27,18 @@ def get_mr_dashboard_stats(mr):
     now = timezone.now()
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     meetings = Meeting.objects.filter(mr=mr, is_deleted=False)
+    # Match app rule: status=scheduled OR has a future pending follow-up.
+    scheduled_meetings = meetings.filter(
+        Q(status="scheduled")
+        | Q(
+            followups__is_deleted=False,
+            followups__status="scheduled",
+            followups__follow_up_date__gte=now,
+        )
+    ).distinct().count()
     return {
         "active_presentations": meetings.filter(status="active").count(),
-        "scheduled_meetings": meetings.filter(status="scheduled").count(),
+        "scheduled_meetings": scheduled_meetings,
         "doctors_connected": DoctorAssignment.objects.filter(
             mr=mr, status="active"
         ).count(),
@@ -107,6 +116,38 @@ def get_system_status():
     }
 
 
+def _normalize_json_payload(value):
+    """Accept dict/list, or a JSON string from mobile clients."""
+    if value is None:
+        return {}
+    if isinstance(value, (dict, list)):
+        return value
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return {}
+        try:
+            import json
+
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, (dict, list)) else {"raw": parsed}
+        except (TypeError, ValueError):
+            return {"raw": value}
+    return {"raw": value}
+
+
+def _coerce_entity_id(entity_id):
+    """Store UUID when possible; otherwise leave null (put raw id in metadata)."""
+    if entity_id in (None, ""):
+        return None
+    try:
+        import uuid as uuid_mod
+
+        return uuid_mod.UUID(str(entity_id))
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
 def log_activity(user, action="", activity_type="", entity_type="", entity_id=None,
                  description="", details=None, metadata=None, request=None):
     ip = None
@@ -114,15 +155,26 @@ def log_activity(user, action="", activity_type="", entity_type="", entity_id=No
     if request:
         ip = request.META.get("REMOTE_ADDR")
         ua = request.META.get("HTTP_USER_AGENT", "")
+
+    details_payload = _normalize_json_payload(details)
+    metadata_payload = _normalize_json_payload(metadata) or details_payload or {}
+    if not isinstance(metadata_payload, dict):
+        metadata_payload = {"data": metadata_payload}
+
+    # Preserve non-UUID entity ids inside metadata so nothing is lost.
+    coerced_id = _coerce_entity_id(entity_id)
+    if entity_id and coerced_id is None:
+        metadata_payload.setdefault("entity_id", str(entity_id))
+
     return ActivityLog.objects.create(
         user=user,
-        action=action,
-        activity_type=activity_type or action,
-        entity_type=entity_type,
-        entity_id=entity_id,
-        description=description,
-        details=details or {},
-        metadata=metadata or details or {},
+        action=action or "",
+        activity_type=activity_type or action or "",
+        entity_type=entity_type or "",
+        entity_id=coerced_id,
+        description=description or "",
+        details=details_payload if isinstance(details_payload, dict) else {"data": details_payload},
+        metadata=metadata_payload,
         ip_address=ip,
         user_agent=ua,
     )

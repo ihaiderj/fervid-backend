@@ -29,7 +29,8 @@ class CreateActivityLogSerializer(serializers.Serializer):
     action = serializers.CharField(required=False, allow_blank=True)
     activity_type = serializers.CharField(required=False, allow_blank=True)
     entity_type = serializers.CharField(required=False, allow_blank=True)
-    entity_id = serializers.UUIDField(required=False, allow_null=True)
+    # Accept UUID or any string id; non-UUIDs are kept in metadata by log_activity.
+    entity_id = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     description = serializers.CharField(required=False, allow_blank=True)
     details = serializers.JSONField(required=False)
     metadata = serializers.JSONField(required=False)

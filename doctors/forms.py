@@ -33,7 +33,6 @@ class DoctorAdminForm(forms.ModelForm):
             "meetings_count",
             "last_meeting_date",
             "next_appointment",
-            "created_by",
             "is_deleted",
         )
 

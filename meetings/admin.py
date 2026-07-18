@@ -2,7 +2,7 @@ import uuid
 
 from django.contrib import admin
 from django.db import models
-from django.forms import Textarea, TextInput
+from django.forms import BaseInlineFormSet, Textarea, TextInput
 from django.utils.html import format_html
 from django.utils.safestring import mark_safe
 from import_export.admin import ImportExportModelAdmin
@@ -85,15 +85,26 @@ def brochure_display_html(obj):
     return "\u2014"
 
 
+class SoftDeleteSlideNoteFormSet(BaseInlineFormSet):
+    def delete_existing(self, obj, commit=True):
+        if commit:
+            from core.soft_delete import soft_delete_instance
+
+            soft_delete_instance(obj, "updated_at")
+
+
 class SlideNoteInline(admin.StackedInline):
     model = MeetingSlideNote
     extra = 0
+    formset = SoftDeleteSlideNoteFormSet
     formfield_overrides = {
         models.TextField: {
             "widget": Textarea(attrs={"rows": 3, "style": "width:60ch;max-width:100%"})
         },
     }
     fields = (
+        "slide_preview",
+        "slide_display_name",
         "slide_order",
         "slide_title",
         "slide_id",
@@ -102,7 +113,7 @@ class SlideNoteInline(admin.StackedInline):
         "brochure_resolved",
         "note_text",
     )
-    readonly_fields = ("brochure_resolved",)
+    readonly_fields = ("slide_preview", "slide_display_name", "brochure_resolved")
 
     def get_queryset(self, request):
         return super().get_queryset(request).filter(is_deleted=False)
@@ -111,6 +122,25 @@ class SlideNoteInline(admin.StackedInline):
     def brochure_resolved(self, obj):
         return brochure_display_html(obj)
 
+    @admin.display(description="Slide preview")
+    def slide_preview(self, obj):
+        if not obj or not obj.pk:
+            return "—"
+        from brochures.slide_preview import resolve_note_slide_image_url, thumb_html
+        from brochures.slide_preview import resolve_note_slide_display_title
+
+        return thumb_html(
+            resolve_note_slide_image_url(obj),
+            resolve_note_slide_display_title(obj),
+        )
+
+    @admin.display(description="Slide name (from brochure/group)")
+    def slide_display_name(self, obj):
+        if not obj or not obj.pk:
+            return "—"
+        from brochures.slide_preview import resolve_note_slide_display_title
+
+        return resolve_note_slide_display_title(obj)
 
 class GeneralNoteInline(admin.StackedInline):
     model = MeetingNote
@@ -155,14 +185,22 @@ class MeetingAdmin(ImportExportModelAdmin):
         "doctor",
         "scheduled_date",
         "status",
+        "next_follow_up",
         "brochures_used",
+        "is_deleted",
     )
-    list_filter = ("status", "scheduled_date")
+    list_filter = ("status", "is_deleted", "scheduled_date", "mr")
     search_fields = ("title", "mr__email", "doctor__first_name", "doctor__last_name")
     date_hierarchy = "scheduled_date"
     inlines = [GeneralNoteInline, SlideNoteInline, FollowUpInline]
     autocomplete_fields = ("mr", "doctor")
-    readonly_fields = ("brochures_used", "presentation_slides", "created_at", "updated_at")
+    readonly_fields = (
+        "brochures_used",
+        "presentation_slides",
+        "next_follow_up",
+        "created_at",
+        "updated_at",
+    )
 
     fieldsets = (
         (
@@ -179,6 +217,7 @@ class MeetingAdmin(ImportExportModelAdmin):
                     "purpose",
                     "location",
                     "notes",
+                    "next_follow_up",
                     "brochures_used",
                 )
             },
@@ -205,11 +244,34 @@ class MeetingAdmin(ImportExportModelAdmin):
         ),
     )
 
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        if "is_deleted__exact" in request.GET:
+            return qs
+        return qs.filter(is_deleted=False)
+
     def save_related(self, request, form, formsets, change):
         super().save_related(request, form, formsets, change)
         from meetings.services import refresh_meeting_presentation_slides
 
         refresh_meeting_presentation_slides(form.instance)
+
+    @admin.display(description="Next follow-up")
+    def next_follow_up(self, obj):
+        from django.utils import timezone
+
+        fu = (
+            obj.followups.filter(is_deleted=False, status="scheduled")
+            .order_by("follow_up_date")
+            .first()
+        )
+        if not fu:
+            return "—"
+        when = fu.follow_up_date
+        label = when.strftime("%Y-%m-%d %H:%M") if when else "—"
+        if when and when >= timezone.now():
+            return f"{label} (pending)"
+        return label
 
     @admin.display(description="Brochures used (from notes)")
     def brochures_used(self, obj):
@@ -257,6 +319,8 @@ class MeetingSlideNoteAdmin(admin.ModelAdmin):
     formfield_overrides = NARROW_TEXT_OVERRIDES
     list_display = (
         "meeting",
+        "slide_preview_thumb",
+        "slide_display_name",
         "slide_id",
         "slide_title",
         "brochure_resolved",
@@ -266,9 +330,18 @@ class MeetingSlideNoteAdmin(admin.ModelAdmin):
     )
     list_filter = ("is_deleted", "created_at")
     search_fields = ("slide_title", "brochure_title", "note_text", "meeting__title")
-    readonly_fields = ("id", "brochure_resolved", "created_at", "updated_at")
+    readonly_fields = (
+        "id",
+        "slide_preview",
+        "slide_display_name",
+        "brochure_resolved",
+        "created_at",
+        "updated_at",
+    )
     fields = (
         "meeting",
+        "slide_preview",
+        "slide_display_name",
         "slide_order",
         "slide_title",
         "slide_id",
@@ -288,9 +361,53 @@ class MeetingSlideNoteAdmin(admin.ModelAdmin):
             return qs
         return qs.filter(is_deleted=False)
 
+    @admin.display(description="Preview")
+    def slide_preview_thumb(self, obj):
+        from brochures.slide_preview import (
+            resolve_note_slide_display_title,
+            resolve_note_slide_image_url,
+            thumb_html,
+        )
+
+        return thumb_html(
+            resolve_note_slide_image_url(obj),
+            resolve_note_slide_display_title(obj),
+            max_height=48,
+        )
+
+    @admin.display(description="Slide preview")
+    def slide_preview(self, obj):
+        from brochures.slide_preview import (
+            resolve_note_slide_display_title,
+            resolve_note_slide_image_url,
+            thumb_html,
+        )
+
+        return thumb_html(
+            resolve_note_slide_image_url(obj),
+            resolve_note_slide_display_title(obj),
+        )
+
+    @admin.display(description="Slide name (from brochure/group)")
+    def slide_display_name(self, obj):
+        from brochures.slide_preview import resolve_note_slide_display_title
+
+        return resolve_note_slide_display_title(obj)
+
     @admin.display(description="Brochure (resolved)")
     def brochure_resolved(self, obj):
         return brochure_display_html(obj)
+
+    def delete_model(self, request, obj):
+        from core.soft_delete import soft_delete_instance
+
+        soft_delete_instance(obj, "updated_at")
+
+    def delete_queryset(self, request, queryset):
+        from core.soft_delete import soft_delete_instance
+
+        for obj in queryset:
+            soft_delete_instance(obj, "updated_at")
 
 
 @admin.register(MeetingNote)
