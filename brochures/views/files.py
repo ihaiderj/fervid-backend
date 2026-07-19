@@ -1,12 +1,9 @@
-import os
-
-from django.conf import settings
-from django.http import FileResponse, Http404
+from django.http import HttpResponse
 from rest_framework.parsers import MultiPartParser
 from rest_framework.views import APIView
 
-from brochures.storage import save_uploaded_file
 from brochures.models import Brochure
+from brochures.storage import delete_by_url, open_by_url, save_uploaded_file
 from core.mixins import APIResponseMixin
 from core.permissions import IsAdminOrMR
 
@@ -44,13 +41,20 @@ class BrochureDownloadView(APIResponseMixin, APIView):
         brochure.view_count += 1
         brochure.save(update_fields=["view_count", "updated_at"])
 
-        if brochure.file_url.startswith(settings.MEDIA_URL):
-            rel_path = brochure.file_url.replace(settings.MEDIA_URL, "")
-            full_path = os.path.join(settings.MEDIA_ROOT, rel_path)
-            if os.path.exists(full_path):
+        if brochure.file_url:
+            try:
+                with open_by_url(brochure.file_url) as f:
+                    data = f.read()
                 brochure.download_count += 1
                 brochure.save(update_fields=["download_count"])
-                return FileResponse(open(full_path, "rb"), as_attachment=True)
+                filename = brochure.file_name or "brochure"
+                response = HttpResponse(
+                    data, content_type=brochure.file_type or "application/octet-stream"
+                )
+                response["Content-Disposition"] = f'attachment; filename="{filename}"'
+                return response
+            except FileNotFoundError:
+                pass
 
         return self.success({"file_url": brochure.file_url})
 
@@ -64,11 +68,8 @@ class BrochureFileDeleteView(APIResponseMixin, APIView):
         except Brochure.DoesNotExist:
             return self.error("Not found", code="NOT_FOUND", status_code=404)
 
-        if brochure.file_url.startswith(settings.MEDIA_URL):
-            rel_path = brochure.file_url.replace(settings.MEDIA_URL, "")
-            full_path = os.path.join(settings.MEDIA_ROOT, rel_path)
-            if os.path.exists(full_path):
-                os.remove(full_path)
+        if brochure.file_url:
+            delete_by_url(brochure.file_url)
 
         brochure.file_url = ""
         brochure.save(update_fields=["file_url"])

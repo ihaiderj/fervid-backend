@@ -194,7 +194,7 @@ CORS_ALLOWED_ORIGINS = [
 ]
 CORS_ALLOW_ALL_ORIGINS = DEBUG and not CORS_ALLOWED_ORIGINS
 
-# File storage
+# File storage (local | s3). Use s3 with Cloudflare R2 for production media.
 STORAGE_BACKEND = os.getenv("STORAGE_BACKEND", "local")
 # 0 = no app-level upload size limit
 MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "0"))
@@ -204,15 +204,30 @@ ALLOWED_FILE_TYPES = ["application/pdf", "application/zip", "image/jpeg", "image
 DATA_UPLOAD_MAX_MEMORY_SIZE = 524288000  # 500 MB
 FILE_UPLOAD_MAX_MEMORY_SIZE = 524288000
 
+AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
+AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
+AWS_STORAGE_BUCKET_NAME = os.getenv("AWS_STORAGE_BUCKET_NAME", "fervid-brochures")
+AWS_S3_ENDPOINT_URL = os.getenv("AWS_S3_ENDPOINT_URL") or None
+AWS_S3_REGION_NAME = os.getenv("AWS_S3_REGION_NAME", "auto")
+# Public hostname for durable preview URLs, e.g. pub-xxxx.r2.dev (no https://)
+AWS_S3_CUSTOM_DOMAIN = (os.getenv("AWS_S3_CUSTOM_DOMAIN") or "").strip() or None
+AWS_DEFAULT_ACL = None
+AWS_QUERYSTRING_AUTH = False
+AWS_S3_FILE_OVERWRITE = False
+
 if STORAGE_BACKEND == "s3":
-    DEFAULT_FILE_STORAGE = "storages.backends.s3boto3.S3Boto3Storage"
-    AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
-    AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
-    AWS_STORAGE_BUCKET_NAME = os.getenv("AWS_STORAGE_BUCKET_NAME", "fervid-brochures")
-    AWS_S3_ENDPOINT_URL = os.getenv("AWS_S3_ENDPOINT_URL") or None
-    AWS_S3_REGION_NAME = os.getenv("AWS_S3_REGION_NAME", "us-east-1")
-    AWS_DEFAULT_ACL = None
-    AWS_QUERYSTRING_AUTH = True
+    STORAGES["default"] = {
+        "BACKEND": "storages.backends.s3boto3.S3Boto3Storage",
+    }
+    if AWS_S3_CUSTOM_DOMAIN:
+        # Store absolute public URLs in the DB for admin/app image previews.
+        MEDIA_URL = (
+            AWS_S3_CUSTOM_DOMAIN
+            if AWS_S3_CUSTOM_DOMAIN.startswith(("http://", "https://"))
+            else f"https://{AWS_S3_CUSTOM_DOMAIN}"
+        )
+        if not MEDIA_URL.endswith("/"):
+            MEDIA_URL = f"{MEDIA_URL}/"
 
 # App defaults
 DEFAULT_ADMIN_EMAIL = os.getenv("DEFAULT_ADMIN_EMAIL", "admin@medpresent.com")

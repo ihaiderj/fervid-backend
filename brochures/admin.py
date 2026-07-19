@@ -87,8 +87,11 @@ class BrochureAdmin(ImportExportModelAdmin):
         thumb = obj.thumbnail_url or "—"
         if obj.thumbnail_url:
             thumb = format_html(
-                '<a href="{}" target="_blank">{}</a>',
-                obj.thumbnail_url,
+                '<div><a href="{0}" target="_blank">'
+                '<img src="{0}" alt="thumbnail" '
+                'style="max-height:120px;border-radius:4px;display:block;margin-bottom:6px" />'
+                "</a>"
+                '<a href="{0}" target="_blank">{0}</a></div>',
                 obj.thumbnail_url,
             )
 

@@ -2,7 +2,7 @@ import os
 import uuid
 import zipfile
 
-from django.conf import settings
+from brochures.storage import save_bytes
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 
@@ -51,15 +51,12 @@ def _zip_metadata(uploaded_file) -> tuple[int | None, str]:
             image_count = len(image_names)
 
             if image_names:
-                thumb_dir = os.path.join(settings.MEDIA_ROOT, "brochures", "thumbnails")
-                os.makedirs(thumb_dir, exist_ok=True)
                 ext = os.path.splitext(image_names[0])[1].lower()
                 thumb_name = f"{uuid.uuid4()}{ext}"
-                thumb_path = os.path.join(thumb_dir, thumb_name)
-                with zf.open(image_names[0]) as src, open(thumb_path, "wb") as dest:
-                    dest.write(src.read())
-                media_url = settings.MEDIA_URL.rstrip("/")
-                thumbnail_url = f"{media_url}/brochures/thumbnails/{thumb_name}"
+                key = f"brochures/thumbnails/{thumb_name}"
+                with zf.open(image_names[0]) as src:
+                    data = src.read()
+                thumbnail_url = save_bytes(data, key)
     except Exception:
         pass
 

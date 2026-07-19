@@ -24,63 +24,83 @@ def is_server_image_url(url: str) -> bool:
     return False
 
 
-def ensure_source_slides_extracted(source_brochure) -> Path | None:
+def ensure_source_slides_extracted(source_brochure) -> bool:
     """
-    Extract JPG/PNG slides from the source brochure ZIP into
-    media/brochure_slides/{brochure_id}/ for admin preview.
-    Returns the directory path, or None if unavailable.
+    Ensure JPG/PNG slides from the source brochure ZIP are available under
+    brochure_slides/{brochure_id}/ (local media or R2).
+    Returns True if slides are available for preview.
     """
+    from brochures.storage import (
+        open_by_url,
+        prefix_has_objects,
+        save_bytes,
+        uses_remote_storage,
+    )
+
     if not source_brochure or not source_brochure.file_url:
-        return None
+        return False
 
-    dest_dir = Path(settings.MEDIA_ROOT) / "brochure_slides" / str(source_brochure.id)
+    prefix = f"brochure_slides/{source_brochure.id}"
+    if prefix_has_objects(prefix):
+        return True
+
+    url = source_brochure.file_url
+    # Only ZIP brochures can be expanded into slide images.
+    if not str(url).lower().split("?")[0].endswith(".zip"):
+        # Local relative path without .zip in URL still possible — try open anyway.
+        pass
+
+    try:
+        with open_by_url(url) as zip_file:
+            with zipfile.ZipFile(zip_file) as zf:
+                extracted = 0
+                for name in zf.namelist():
+                    base = os.path.basename(name)
+                    if not base:
+                        continue
+                    ext = Path(base).suffix.lower()
+                    if ext not in {".jpg", ".jpeg", ".png", ".webp", ".gif"}:
+                        continue
+                    key = f"{prefix}/{base}"
+                    with zf.open(name) as src:
+                        save_bytes(src.read(), key)
+                    extracted += 1
+                if extracted == 0:
+                    return False
+    except Exception:
+        return False
+
+    if uses_remote_storage():
+        return prefix_has_objects(prefix)
+
+    dest_dir = Path(settings.MEDIA_ROOT) / prefix
     marker = dest_dir / ".extracted"
-    if marker.exists() and any(dest_dir.glob("*.*")):
-        return dest_dir
-
-    media_url = settings.MEDIA_URL.rstrip("/")
-    rel = source_brochure.file_url
-    if rel.startswith(media_url):
-        rel = rel[len(media_url) :].lstrip("/")
-    elif rel.startswith("/media/"):
-        rel = rel[len("/media/") :]
-    zip_path = Path(settings.MEDIA_ROOT) / rel
-    if not zip_path.exists() or zip_path.suffix.lower() != ".zip":
-        return None
-
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(zip_path) as zf:
-        for name in zf.namelist():
-            base = os.path.basename(name)
-            if not base:
-                continue
-            ext = Path(base).suffix.lower()
-            if ext not in {".jpg", ".jpeg", ".png", ".webp", ".gif"}:
-                continue
-            target = dest_dir / base
-            if not target.exists():
-                with zf.open(name) as src, open(target, "wb") as out:
-                    out.write(src.read())
-    marker.write_text("ok", encoding="utf-8")
-    return dest_dir
+    try:
+        marker.write_text("ok", encoding="utf-8")
+    except OSError:
+        pass
+    return dest_dir.exists() and any(dest_dir.glob("*.*"))
 
 
 def slide_image_url_from_filename(source_brochure, file_name: str) -> str:
+    from brochures.storage import object_exists, public_media_url
+
     if not source_brochure or not file_name:
         return ""
-    dest_dir = ensure_source_slides_extracted(source_brochure)
-    if not dest_dir:
+    if not ensure_source_slides_extracted(source_brochure):
         return ""
     base = os.path.basename(file_name)
-    path = dest_dir / base
-    if not path.exists():
-        # try case-insensitive match
+    key = f"brochure_slides/{source_brochure.id}/{base}"
+    if object_exists(key):
+        return public_media_url(key)
+
+    # Case-insensitive match (local only is cheap; for R2 try common variants)
+    dest_dir = Path(settings.MEDIA_ROOT) / "brochure_slides" / str(source_brochure.id)
+    if dest_dir.exists():
         matches = [p for p in dest_dir.iterdir() if p.name.lower() == base.lower()]
-        if not matches:
-            return ""
-        path = matches[0]
-    media_url = settings.MEDIA_URL.rstrip("/")
-    return f"{media_url}/brochure_slides/{source_brochure.id}/{path.name}"
+        if matches:
+            return public_media_url(f"brochure_slides/{source_brochure.id}/{matches[0].name}")
+    return ""
 
 
 def resolve_slide_image_url(slide: dict, source_brochure=None) -> str:
