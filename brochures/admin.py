@@ -34,6 +34,7 @@ class BrochureAdmin(ImportExportModelAdmin):
     readonly_fields = (
         "id",
         "file_details",
+        "slides_panel",
         "view_count",
         "download_count",
         "created_at",
@@ -62,6 +63,16 @@ class BrochureAdmin(ImportExportModelAdmin):
             {
                 "description": "Upload a PDF or ZIP. File URL, name, type, size, pages, thumbnail, and ownership are set automatically.",
                 "fields": ("upload_file", "file_details"),
+            },
+        ),
+        (
+            "Slides (with preview)",
+            {
+                "description": (
+                    "For ZIP brochures, slides are extracted for preview "
+                    "(same behavior as Saved Brochures)."
+                ),
+                "fields": ("slides_panel",),
             },
         ),
         (
@@ -116,6 +127,24 @@ class BrochureAdmin(ImportExportModelAdmin):
             uploaded=obj.uploaded_by.full_name if obj.uploaded_by else "—",
             assigned=obj.assigned_by.full_name if obj.assigned_by else "—",
         )
+
+    @admin.display(description="Slides")
+    def slides_panel(self, obj):
+        from brochures.slide_preview import build_source_slides_list, render_slides_table
+
+        if not obj or not obj.pk:
+            return "Save the brochure first to see slide previews."
+        if not obj.file_url:
+            return mark_safe("<p style='color:#666'>No file uploaded yet.</p>")
+
+        slides = build_source_slides_list(obj)
+        if not slides:
+            return mark_safe(
+                "<p style='color:#666'>No slide images found. "
+                "Upload a ZIP containing JPG/PNG slides to see previews here. "
+                "PDF files do not expand into slide thumbnails.</p>"
+            )
+        return render_slides_table(slides, source_brochure=obj)
 
     def save_model(self, request, obj, form, change):
         upload = form.cleaned_data.get("upload_file")
@@ -291,10 +320,10 @@ class SavedBrochureAdmin(admin.ModelAdmin):
     @admin.display(description="Slides")
     def slides_panel(self, obj):
         from brochures.slide_preview import (
+            build_source_slides_list,
+            find_slide_notes_for_saved,
             render_slides_table,
             sync_payload,
-            find_slide_notes_for_saved,
-            slide_image_url_from_filename,
         )
 
         source = self._source(obj)
@@ -303,24 +332,7 @@ class SavedBrochureAdmin(admin.ModelAdmin):
         if sync:
             slides = sync_payload(sync)["slides"]
         elif source:
-            # Fall back to source ZIP slide list for preview.
-            from brochures.slide_preview import ensure_source_slides_extracted
-
-            dest = ensure_source_slides_extracted(source)
-            if dest:
-                files = sorted(
-                    [p.name for p in dest.iterdir() if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}]
-                )
-                slides = [
-                    {
-                        "id": f"source_slide_{i}",
-                        "title": name,
-                        "fileName": name,
-                        "order": i,
-                        "image_url": slide_image_url_from_filename(source, name),
-                    }
-                    for i, name in enumerate(files, start=1)
-                ]
+            slides = build_source_slides_list(source)
 
         notes = find_slide_notes_for_saved(obj)
         notes_by_slide = {}

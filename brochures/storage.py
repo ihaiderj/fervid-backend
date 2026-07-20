@@ -196,6 +196,53 @@ def prefix_has_objects(prefix: str) -> bool:
     return local.exists() and any(local.glob("*.*"))
 
 
+def list_prefix_basenames(prefix: str, extensions: set[str] | None = None) -> list[str]:
+    """Return sorted base filenames under a storage prefix."""
+    prefix = prefix.lstrip("/")
+    if not prefix.endswith("/"):
+        prefix = f"{prefix}/"
+    exts = {e.lower() if e.startswith(".") else f".{e.lower()}" for e in (extensions or set())}
+
+    names: list[str] = []
+    if uses_remote_storage():
+        try:
+            client = _s3_client()
+            token = None
+            while True:
+                kwargs = {
+                    "Bucket": settings.AWS_STORAGE_BUCKET_NAME,
+                    "Prefix": prefix,
+                }
+                if token:
+                    kwargs["ContinuationToken"] = token
+                resp = client.list_objects_v2(**kwargs)
+                for obj in resp.get("Contents") or []:
+                    key = obj.get("Key") or ""
+                    base = os.path.basename(key)
+                    if not base or base.startswith("."):
+                        continue
+                    if exts and Path(base).suffix.lower() not in exts:
+                        continue
+                    names.append(base)
+                if not resp.get("IsTruncated"):
+                    break
+                token = resp.get("NextContinuationToken")
+        except Exception:
+            return []
+        return sorted(set(names))
+
+    local = Path(settings.MEDIA_ROOT) / prefix.rstrip("/")
+    if not local.exists():
+        return []
+    for path in local.iterdir():
+        if not path.is_file() or path.name.startswith("."):
+            continue
+        if exts and path.suffix.lower() not in exts:
+            continue
+        names.append(path.name)
+    return sorted(set(names))
+
+
 @contextmanager
 def open_by_url(url: str):
     """

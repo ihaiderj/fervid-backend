@@ -103,6 +103,34 @@ def slide_image_url_from_filename(source_brochure, file_name: str) -> str:
     return ""
 
 
+IMAGE_SLIDE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+
+
+def list_source_slide_filenames(source_brochure) -> list[str]:
+    """Extract ZIP slides if needed, then return sorted image filenames."""
+    from brochures.storage import list_prefix_basenames
+
+    if not source_brochure or not ensure_source_slides_extracted(source_brochure):
+        return []
+    prefix = f"brochure_slides/{source_brochure.id}"
+    return list_prefix_basenames(prefix, IMAGE_SLIDE_EXTENSIONS)
+
+
+def build_source_slides_list(source_brochure) -> list[dict]:
+    """Slide dicts for admin preview tables from a source brochure ZIP."""
+    files = list_source_slide_filenames(source_brochure)
+    return [
+        {
+            "id": f"source_slide_{i}",
+            "title": name,
+            "fileName": name,
+            "order": i,
+            "image_url": slide_image_url_from_filename(source_brochure, name),
+        }
+        for i, name in enumerate(files, start=1)
+    ]
+
+
 def resolve_slide_image_url(slide: dict, source_brochure=None) -> str:
     """Prefer server URL on the slide; else map fileName to extracted source slides."""
     for key in ("image_url", "imageUrl", "thumbnail_url", "thumbnailUrl"):
@@ -379,7 +407,7 @@ def thumb_html(url: str, title: str = "", max_height: int = 72) -> str:
 def render_slides_table(slides, source_brochure=None, notes_by_slide=None) -> str:
     notes_by_slide = notes_by_slide or {}
     if not slides:
-        return "<p style='color:#666'>No slides found for this saved brochure.</p>"
+        return "<p style='color:#666'>No slides found for this brochure.</p>"
 
     rows = []
     for slide in sorted(slides, key=lambda s: s.get("order") or 0):
